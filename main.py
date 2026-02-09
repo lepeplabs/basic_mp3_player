@@ -1,3 +1,4 @@
+
 """
 main.py
 Entry point for the MP3 Player application
@@ -15,7 +16,7 @@ def main():
     # ============================================
     
     # Option 1: Absolute path (recommended)
-    DEFAULT_MUSIC_FOLDER = "/Users/lepeplabs/lepeplabs/my_music"
+    DEFAULT_MUSIC_FOLDER = "/Users/lepeplabs/Music/Music/Media.localized/Music"
     
     # Option 2: Relative to this script
     # DEFAULT_MUSIC_FOLDER = os.path.join(os.path.dirname(__file__), "music")

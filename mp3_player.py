@@ -2,6 +2,7 @@
 mp3_player.py
 Core audio playback functionality using pygame with pydub conversion
 Supports: MP3, AAC/M4A, WMA, WAV, FLAC
+Now with playlist support and album art extraction
 """
 
 import pygame.mixer
@@ -15,11 +16,12 @@ from mutagen.asf import ASF
 from mutagen.wave import WAVE
 from mutagen.flac import FLAC
 from mutagen.aac import AAC
+from mutagen.id3 import ID3, APIC
+from PIL import Image
 
 class AudioPlayer:
     def __init__(self):
         """Initialize the audio player"""
-        # Initialize ONLY the mixer, not full pygame
         pygame.mixer.init(frequency=44100, size=-16, channels=2, buffer=512)
         
         self.current_file = None
@@ -29,6 +31,10 @@ class AudioPlayer:
         self.pause_position = 0
         self.play_start_time = 0
         self.pause_start_time = 0
+        
+        # Playlist management
+        self.playlist = []  # List of file paths
+        self.current_track_index = -1
         
     def load_file(self, file_path):
         """Load an audio file and get its duration"""
@@ -53,14 +59,12 @@ class AudioPlayer:
                     print(f"MP3 duration: {self.duration}s")
                 
                 elif file_ext == '.aac':
-                    # Raw AAC files - use AAC parser or fallback to pydub
                     try:
                         audio = AAC(file_path)
                         self.duration = int(audio.info.length)
                         print(f"AAC duration: {self.duration}s")
                     except Exception as e:
                         print(f"Error reading AAC with mutagen: {e}")
-                        # Fallback: use pydub to get duration
                         try:
                             audio_seg = AudioSegment.from_file(file_path, format='aac')
                             self.duration = int(len(audio_seg) / 1000)
@@ -77,7 +81,6 @@ class AudioPlayer:
                         print(f"M4A duration: {self.duration}s")
                     except Exception as e:
                         print(f"Error reading M4A with mutagen: {e}")
-                        # Fallback: use pydub to get duration
                         audio_seg = AudioSegment.from_file(file_path, format='m4a')
                         self.duration = int(len(audio_seg) / 1000)
                         print(f"M4A duration from pydub: {self.duration}s")
@@ -111,36 +114,152 @@ class AudioPlayer:
                 return False
         return False
     
+    def get_file_duration(self, file_path):
+        """Get duration of a file without loading it for playback"""
+        if not os.path.exists(file_path):
+            return 0
+            
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
+            if file_ext == '.mp3':
+                audio = MP3(file_path)
+                return int(audio.info.length)
+            elif file_ext == '.aac':
+                try:
+                    audio = AAC(file_path)
+                    return int(audio.info.length)
+                except:
+                    audio_seg = AudioSegment.from_file(file_path, format='aac')
+                    return int(len(audio_seg) / 1000)
+            elif file_ext in ['.m4a', '.mp4']:
+                audio = MP4(file_path)
+                return int(audio.info.length)
+            elif file_ext == '.wma':
+                audio = ASF(file_path)
+                return int(audio.info.length)
+            elif file_ext == '.wav':
+                audio = WAVE(file_path)
+                return int(audio.info.length)
+            elif file_ext == '.flac':
+                audio = FLAC(file_path)
+                return int(audio.info.length)
+        except Exception as e:
+            print(f"Error getting duration for {file_path}: {e}")
+            return 0
+        
+        return 0
+    
+    def get_album_art(self, file_path):
+        """Extract album art from audio file, returns PIL Image or None"""
+        if not os.path.exists(file_path):
+            return None
+            
+        try:
+            file_ext = os.path.splitext(file_path)[1].lower()
+            
+            if file_ext == '.mp3':
+                audio = ID3(file_path)
+                for tag in audio.values():
+                    if isinstance(tag, APIC):
+                        # APIC is album art
+                        image_data = tag.data
+                        image = Image.open(io.BytesIO(image_data))
+                        return image
+                        
+            elif file_ext in ['.m4a', '.mp4']:
+                audio = MP4(file_path)
+                if 'covr' in audio:
+                    image_data = audio['covr'][0]
+                    image = Image.open(io.BytesIO(image_data))
+                    return image
+                    
+            elif file_ext == '.flac':
+                audio = FLAC(file_path)
+                if audio.pictures:
+                    image_data = audio.pictures[0].data
+                    image = Image.open(io.BytesIO(image_data))
+                    return image
+                    
+        except Exception as e:
+            print(f"Error extracting album art: {e}")
+            
+        return None
+    
+    def load_folder(self, folder_path):
+        """Load all supported audio files from a folder into playlist"""
+        if not os.path.exists(folder_path):
+            return False
+            
+        supported_extensions = ['.mp3', '.m4a', '.mp4', '.aac', '.wma', '.wav', '.flac']
+        self.playlist = []
+        
+        try:
+            files = os.listdir(folder_path)
+            for file in sorted(files):
+                file_path = os.path.join(folder_path, file)
+                if os.path.isfile(file_path):
+                    ext = os.path.splitext(file)[1].lower()
+                    if ext in supported_extensions:
+                        self.playlist.append(file_path)
+            
+            print(f"Loaded {len(self.playlist)} tracks from folder")
+            return len(self.playlist) > 0
+            
+        except Exception as e:
+            print(f"Error loading folder: {e}")
+            return False
+    
+    def add_files_to_playlist(self, file_paths):
+        """Add multiple files to the playlist"""
+        for file_path in file_paths:
+            if os.path.exists(file_path) and file_path not in self.playlist:
+                self.playlist.append(file_path)
+        print(f"Playlist now has {len(self.playlist)} tracks")
+    
+    def play_track_at_index(self, index):
+        """Play a specific track from the playlist"""
+        if 0 <= index < len(self.playlist):
+            self.current_track_index = index
+            if self.load_file(self.playlist[index]):
+                return self.play()
+        return False
+    
+    def play_next(self):
+        """Play the next track in playlist"""
+        if self.playlist and self.current_track_index < len(self.playlist) - 1:
+            return self.play_track_at_index(self.current_track_index + 1)
+        return False
+    
+    def play_previous(self):
+        """Play the previous track in playlist"""
+        if self.playlist and self.current_track_index > 0:
+            return self.play_track_at_index(self.current_track_index - 1)
+        return False
+    
     def play(self):
         """Play the loaded audio file or resume if paused"""
         if self.current_file:
             try:
-                # If paused, just unpause
                 if self.is_paused:
                     pygame.mixer.music.unpause()
                     self.is_paused = False
                     self.is_playing = True
-                    # Adjust start time to account for paused duration
                     paused_duration = time.time() - self.pause_start_time
                     self.play_start_time += paused_duration
                     print(f"Resumed from position: {self.pause_position}s")
                     return True
                 
-                # Get file extension
                 file_ext = os.path.splitext(self.current_file)[1].lower()
                 
-                # For formats pygame supports natively (MP3, WAV, OGG)
                 if file_ext in ['.mp3', '.wav', '.ogg']:
                     print(f"Playing {file_ext} directly with pygame")
                     pygame.mixer.music.load(self.current_file)
                 else:
-                    # For other formats, convert to WAV in memory
                     print(f"Converting {file_ext} to WAV for playback...")
                     
-                    # Load audio file with pydub - specify format explicitly
                     try:
                         if file_ext == '.aac':
-                            # Try AAC format first
                             audio = AudioSegment.from_file(self.current_file, format='aac')
                         elif file_ext in ['.m4a', '.mp4']:
                             audio = AudioSegment.from_file(self.current_file, format='m4a')
@@ -152,7 +271,6 @@ class AudioPlayer:
                             audio = AudioSegment.from_file(self.current_file)
                     except Exception as e:
                         print(f"Error loading {file_ext} file: {e}")
-                        # For AAC, try alternative format detection
                         if file_ext == '.aac':
                             print("Trying to load as ADTS AAC stream...")
                             audio = AudioSegment.from_file(self.current_file)
@@ -160,21 +278,16 @@ class AudioPlayer:
                             raise
                     
                     print(f"Audio loaded, converting to WAV...")
-                    
-                    # Export to bytes in WAV format
                     wav_io = io.BytesIO()
                     audio.export(wav_io, format='wav')
                     wav_io.seek(0)
-                    
                     print(f"Conversion complete, loading into pygame...")
-                    
-                    # Load from bytes
                     pygame.mixer.music.load(wav_io, 'wav')
                 
                 pygame.mixer.music.play()
                 self.is_playing = True
                 self.is_paused = False
-                self.play_start_time = time.time()  # Use time.time() for position tracking
+                self.play_start_time = time.time()
                 self.pause_position = 0
                 print(f"Playback started at time: {self.play_start_time}")
                 return True
@@ -214,7 +327,6 @@ class AudioPlayer:
         if self.is_paused:
             return self.pause_position
         elif self.is_playing:
-            # Calculate elapsed time using time.time()
             elapsed_seconds = time.time() - self.play_start_time
             position = min(elapsed_seconds, self.duration)
             return position
@@ -232,11 +344,7 @@ class AudioPlayer:
         return f"{minutes}:{secs:02d}"
     
     def set_volume(self, volume):
-        """
-        Set volume level
-        Args:
-            volume: float between 0.0 and 1.0
-        """
+        """Set volume level (0.0 to 1.0)"""
         pygame.mixer.music.set_volume(volume)
     
     def get_current_file(self):
