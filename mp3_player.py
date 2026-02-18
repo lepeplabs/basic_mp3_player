@@ -343,6 +343,60 @@ class AudioPlayer:
         secs = int(seconds % 60)
         return f"{minutes}:{secs:02d}"
     
+    def seek(self, seconds):
+        """Seek to a position in seconds. Works while playing or paused."""
+        if not self.current_file:
+            return False
+
+        seconds = max(0, min(seconds, self.duration))
+        was_paused = self.is_paused
+
+        try:
+            file_ext = os.path.splitext(self.current_file)[1].lower()
+
+            if file_ext in ['.mp3', '.wav', '.ogg']:
+                pygame.mixer.music.play(0, seconds)
+            else:
+                # Re-convert from seek position for pydub-handled formats
+                if file_ext == '.aac':
+                    audio = AudioSegment.from_file(self.current_file, format='aac')
+                elif file_ext in ['.m4a', '.mp4']:
+                    audio = AudioSegment.from_file(self.current_file, format='m4a')
+                elif file_ext == '.wma':
+                    audio = AudioSegment.from_file(self.current_file, format='wma')
+                elif file_ext == '.flac':
+                    audio = AudioSegment.from_file(self.current_file, format='flac')
+                else:
+                    audio = AudioSegment.from_file(self.current_file)
+
+                audio_slice = audio[int(seconds * 1000):]
+                wav_io = io.BytesIO()
+                audio_slice.export(wav_io, format='wav')
+                wav_io.seek(0)
+                pygame.mixer.music.load(wav_io, 'wav')
+                pygame.mixer.music.play()
+
+            self.play_start_time = time.time() - seconds
+            self.is_playing = True
+            self.is_paused = False
+            self.pause_position = 0
+
+            if was_paused:
+                pygame.mixer.music.pause()
+                self.is_playing = False
+                self.is_paused = True
+                self.pause_position = seconds
+                self.pause_start_time = time.time()
+
+            print(f"Seeked to {seconds:.1f}s")
+            return True
+
+        except Exception as e:
+            print(f"Error seeking: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
     def set_volume(self, volume):
         """Set volume level (0.0 to 1.0)"""
         pygame.mixer.music.set_volume(volume)

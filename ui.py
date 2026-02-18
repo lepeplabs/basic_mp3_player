@@ -1,7 +1,7 @@
 """
 ui.py
 User interface for the MP3 player using CustomTkinter
-WinPlay3 / Windows 95 retro style with track list and album art
+lepeplabs_audio_thing / Windows 95 retro style with track list and album art
 """
 
 import customtkinter as ctk
@@ -17,8 +17,8 @@ class PlayerUI:
         
         # Create main window
         self.window = ctk.CTk()
-        self.window.title("WinPlay3")
-        self.window.geometry("710x500")
+        self.window.title("lepeplabs_audio_thing")
+        self.window.geometry("780x590")
         self.window.resizable(False, False)
         
         # Windows 95 color scheme
@@ -32,6 +32,13 @@ class PlayerUI:
         # Album art
         self.current_album_art = None
         self.album_art_label = None
+
+        # Track list row references for highlighting
+        self.track_frames = []  # list of (frame, [child_labels])
+
+        # Seek/scrub state
+        self.seeking = False
+        self._seek_pending = 0.0
         
         # Build the interface
         self.create_widgets()
@@ -165,6 +172,21 @@ class PlayerUI:
                                          border_color=self.win95_dark_gray, font=("Arial", 12, "bold"))
         self.folder_btn.grid(row=0, column=5, padx=3)
         
+        # Progress / seek bar
+        seek_frame = ctk.CTkFrame(left_frame, fg_color=self.win95_gray, corner_radius=0)
+        seek_frame.pack(fill="x", padx=10, pady=(0, 5))
+
+        self.seek_slider = ctk.CTkSlider(seek_frame, from_=0, to=100, command=self._on_seek_drag,
+                                          height=14, button_color=self.win95_dark_gray,
+                                          button_hover_color="#505050",
+                                          progress_color=self.lcd_green,
+                                          fg_color=self.win95_dark_gray)
+        self.seek_slider.set(0)
+        self.seek_slider.pack(fill="x")
+        # Bind press/release on the internal canvas so we know when dragging starts/ends
+        self.seek_slider._canvas.bind("<ButtonPress-1>", self._seek_start)
+        self.seek_slider._canvas.bind("<ButtonRelease-1>", self._seek_end)
+
         # Volume control
         volume_frame = ctk.CTkFrame(left_frame, fg_color=self.win95_gray, corner_radius=0)
         volume_frame.pack(pady=5)
@@ -218,41 +240,57 @@ class PlayerUI:
         # Clear existing tracks
         for widget in self.tracklist_frame.winfo_children():
             widget.destroy()
-        
+        self.track_frames = []
+
         # Add each track
         for idx, file_path in enumerate(self.audio_player.playlist):
             filename = os.path.basename(file_path)
             # Remove extension
             track_name = os.path.splitext(filename)[0]
-            
+
             # Get duration
             duration = self.audio_player.get_file_duration(file_path)
             duration_str = self.audio_player.format_time(duration)
-            
-            # Create track frame - MATCH TRACKLIST BACKGROUND
+
+            # Create track frame
             track_frame = ctk.CTkFrame(self.tracklist_frame, fg_color=self.tracklist_bg, corner_radius=0)
             track_frame.pack(fill="x", pady=1)
-            
+
             # Track number
             track_num_label = ctk.CTkLabel(track_frame, text=f"{idx + 1:02d}.", text_color="black",
                                             font=("Arial", 10), width=30, anchor="w")
             track_num_label.pack(side="left", padx=5)
-            
+
             # Track name
             track_name_label = ctk.CTkLabel(track_frame, text=track_name, text_color="black",
                                              font=("Arial", 10), anchor="w")
             track_name_label.pack(side="left", fill="x", expand=True, padx=5)
-            
+
             # Duration
             duration_label = ctk.CTkLabel(track_frame, text=duration_str, text_color="black",
                                            font=("Arial", 10), width=50, anchor="e")
             duration_label.pack(side="right", padx=5)
-            
+
+            # Store references for highlighting
+            self.track_frames.append((track_frame, [track_num_label, track_name_label, duration_label]))
+
             # Make track clickable
             track_frame.bind("<Button-1>", lambda e, i=idx: self.play_track_from_list(i))
             track_num_label.bind("<Button-1>", lambda e, i=idx: self.play_track_from_list(i))
             track_name_label.bind("<Button-1>", lambda e, i=idx: self.play_track_from_list(i))
             duration_label.bind("<Button-1>", lambda e, i=idx: self.play_track_from_list(i))
+
+    def highlight_track(self, index):
+        """Highlight the active track row, reset all others"""
+        for i, (frame, labels) in enumerate(self.track_frames):
+            if i == index:
+                frame.configure(fg_color="#000080")
+                for label in labels:
+                    label.configure(fg_color="#000080", text_color="white")
+            else:
+                frame.configure(fg_color=self.tracklist_bg)
+                for label in labels:
+                    label.configure(fg_color=self.tracklist_bg, text_color="black")
     
     def play_track_from_list(self, index):
         """Play a track when clicked in the list"""
@@ -270,7 +308,8 @@ class PlayerUI:
             # Update track number
             if self.audio_player.current_track_index >= 0:
                 self.track_num.configure(text=str(self.audio_player.current_track_index + 1))
-            
+                self.highlight_track(self.audio_player.current_track_index)
+
             # Update album art
             self.update_album_art()
     
@@ -293,12 +332,17 @@ class PlayerUI:
         if self.audio_player.current_file:
             current_time = self.audio_player.get_position()
             total_time = self.audio_player.get_duration()
-            
+
             current_str = self.audio_player.format_time(current_time)
             total_str = self.audio_player.format_time(total_time)
-            
+
             self.time_display.configure(text=f"{current_str} / {total_str}")
-            
+
+            # Advance seek bar only when user is not dragging
+            if not self.seeking:
+                progress = (current_time / total_time * 100) if total_time > 0 else 0
+                self.seek_slider.set(progress)
+
             # Auto-play next track when current ends
             if self.audio_player.is_playing and current_time >= total_time and total_time > 0:
                 if self.audio_player.play_next():
@@ -307,6 +351,8 @@ class PlayerUI:
                     self.stop_music()
         else:
             self.time_display.configure(text="0:00 / 0:00")
+            if not self.seeking:
+                self.seek_slider.set(0)
         
         self.window.after(100, self.update_time_display)
     
@@ -349,6 +395,22 @@ class PlayerUI:
         else:
             self.song_display.configure(text="⏭ No next track")
     
+    def _seek_start(self, _event):
+        """User started dragging the seek bar"""
+        self.seeking = True
+
+    def _on_seek_drag(self, value):
+        """Called on every slider movement — store pending value"""
+        self._seek_pending = float(value)
+
+    def _seek_end(self, event):
+        """User released the seek bar — perform the seek"""
+        total = self.audio_player.get_duration()
+        if total > 0:
+            target_seconds = (self._seek_pending / 100.0) * total
+            self.audio_player.seek(target_seconds)
+        self.seeking = False
+
     def change_volume(self, value):
         """Volume slider handler"""
         volume = float(value) / 100
