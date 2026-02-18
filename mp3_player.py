@@ -150,6 +150,50 @@ class AudioPlayer:
         
         return 0
     
+    def get_metadata(self, file_path):
+        """Return dict with artist, album, year from file tags"""
+        meta = {'artist': '', 'album': '', 'year': ''}
+        if not os.path.exists(file_path):
+            return meta
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            if ext == '.mp3':
+                tags = ID3(file_path)
+                if 'TPE1' in tags:
+                    meta['artist'] = str(tags['TPE1'])
+                if 'TALB' in tags:
+                    meta['album'] = str(tags['TALB'])
+                for year_tag in ('TDRC', 'TYER', 'TDAT'):
+                    if year_tag in tags:
+                        meta['year'] = str(tags[year_tag])[:4]
+                        break
+            elif ext in ['.m4a', '.mp4']:
+                audio = MP4(file_path)
+                if audio.tags:
+                    if '\xa9ART' in audio.tags:
+                        meta['artist'] = str(audio.tags['\xa9ART'][0])
+                    if '\xa9alb' in audio.tags:
+                        meta['album'] = str(audio.tags['\xa9alb'][0])
+                    if '\xa9day' in audio.tags:
+                        meta['year'] = str(audio.tags['\xa9day'][0])[:4]
+            elif ext == '.flac':
+                audio = FLAC(file_path)
+                meta['artist'] = (audio.get('artist') or [''])[0]
+                meta['album'] = (audio.get('album') or [''])[0]
+                year = (audio.get('date') or [''])[0]
+                meta['year'] = year[:4] if year else ''
+            elif ext == '.wma':
+                audio = ASF(file_path)
+                if 'Author' in audio:
+                    meta['artist'] = str(audio['Author'][0])
+                if 'WM/AlbumTitle' in audio:
+                    meta['album'] = str(audio['WM/AlbumTitle'][0])
+                if 'WM/Year' in audio:
+                    meta['year'] = str(audio['WM/Year'][0])[:4]
+        except Exception as e:
+            print(f"Error reading metadata for {file_path}: {e}")
+        return meta
+
     def get_album_art(self, file_path):
         """Extract album art from audio file, returns PIL Image or None"""
         if not os.path.exists(file_path):

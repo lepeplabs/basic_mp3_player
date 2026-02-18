@@ -18,7 +18,7 @@ class PlayerUI:
         # Create main window
         self.window = ctk.CTk()
         self.window.title("lepeplabs_audio_thing")
-        self.window.geometry("780x590")
+        self.window.geometry("780x640")
         self.window.resizable(False, False)
         
         # Windows 95 color scheme
@@ -133,6 +133,22 @@ class PlayerUI:
                                           anchor="w", padx=10)
         self.song_display.pack(fill="x", pady=(5, 8), padx=5)
         
+        # Metadata display (artist / album · year)
+        meta_frame = ctk.CTkFrame(left_frame, fg_color=self.lcd_bg, corner_radius=0, height=48,
+                                   border_width=2, border_color=self.win95_dark_gray)
+        meta_frame.pack(fill="x", pady=(0, 10))
+        meta_frame.pack_propagate(False)
+
+        self.artist_display = ctk.CTkLabel(meta_frame, text="", text_color=self.lcd_green,
+                                            font=("Courier", 10, "bold"), fg_color=self.lcd_bg,
+                                            anchor="w", padx=10)
+        self.artist_display.pack(fill="x", pady=(4, 0))
+
+        self.album_display = ctk.CTkLabel(meta_frame, text="", text_color=self.lcd_green,
+                                           font=("Courier", 10, "bold"), fg_color=self.lcd_bg,
+                                           anchor="w", padx=10)
+        self.album_display.pack(fill="x", pady=(0, 4))
+
         # Transport controls
         controls_frame = ctk.CTkFrame(left_frame, fg_color=self.win95_gray, corner_radius=0)
         controls_frame.pack(pady=10)
@@ -310,9 +326,34 @@ class PlayerUI:
                 self.track_num.configure(text=str(self.audio_player.current_track_index + 1))
                 self.highlight_track(self.audio_player.current_track_index)
 
-            # Update album art
+            # Update metadata and album art
+            self.update_metadata_display()
             self.update_album_art()
     
+    def update_metadata_display(self):
+        """Update artist / album / year labels from file tags"""
+        if not self.audio_player.current_file:
+            self.artist_display.configure(text="")
+            self.album_display.configure(text="")
+            return
+
+        meta = self.audio_player.get_metadata(self.audio_player.current_file)
+
+        artist = meta['artist'] or 'Unknown Artist'
+        self.artist_display.configure(text=f"\u266a {artist[:34]}")
+
+        album = meta['album']
+        year = meta['year']
+        if album and year:
+            album_text = f"{album[:24]}  ({year})"
+        elif album:
+            album_text = album[:34]
+        elif year:
+            album_text = year
+        else:
+            album_text = ''
+        self.album_display.configure(text=f"  {album_text}")
+
     def update_album_art(self):
         """Extract and display album art"""
         if self.audio_player.current_file:
