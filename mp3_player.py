@@ -9,6 +9,15 @@ import pygame.mixer
 import os
 import io
 import time
+import random
+import json
+import subprocess
+import threading
+import urllib.request
+import urllib.parse
+
+# 2 seconds of 44100 Hz stereo 16-bit PCM per stream chunk
+_STREAM_CHUNK = 44100 * 2 * 2 * 2
 from pydub import AudioSegment
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -33,8 +42,20 @@ class AudioPlayer:
         self.pause_start_time = 0
         
         # Playlist management
-        self.playlist = []  # List of file paths
+        self.playlist = []          # flat list of all file paths (for playback)
+        self.folders = []           # [{'name': str, 'path': str|None, 'tracks': [paths]}]
         self.current_track_index = -1
+
+        # Playback modes
+        self.shuffle = False
+        self.repeat_mode = 0  # 0 = off, 1 = repeat-all, 2 = repeat-one
+        self._shuffle_order = []
+        self._shuffle_pos = -1
+
+        # Radio stream state
+        self._stream_proc = None
+        self._stream_channel = None
+        self._stream_playing = False
         
     def load_file(self, file_path):
         """Load an audio file and get its duration"""
@@ -151,8 +172,8 @@ class AudioPlayer:
         return 0
     
     def get_metadata(self, file_path):
-        """Return dict with artist, album, year from file tags"""
-        meta = {'artist': '', 'album': '', 'year': ''}
+        """Return dict with artist, album, year, genre from file tags"""
+        meta = {'artist': '', 'album': '', 'year': '', 'genre': ''}
         if not os.path.exists(file_path):
             return meta
         try:
@@ -163,6 +184,8 @@ class AudioPlayer:
                     meta['artist'] = str(tags['TPE1'])
                 if 'TALB' in tags:
                     meta['album'] = str(tags['TALB'])
+                if 'TCON' in tags:
+                    meta['genre'] = str(tags['TCON'])
                 for year_tag in ('TDRC', 'TYER', 'TDAT'):
                     if year_tag in tags:
                         meta['year'] = str(tags[year_tag])[:4]
@@ -176,10 +199,13 @@ class AudioPlayer:
                         meta['album'] = str(audio.tags['\xa9alb'][0])
                     if '\xa9day' in audio.tags:
                         meta['year'] = str(audio.tags['\xa9day'][0])[:4]
+                    if '\xa9gen' in audio.tags:
+                        meta['genre'] = str(audio.tags['\xa9gen'][0])
             elif ext == '.flac':
                 audio = FLAC(file_path)
                 meta['artist'] = (audio.get('artist') or [''])[0]
-                meta['album'] = (audio.get('album') or [''])[0]
+                meta['album']  = (audio.get('album')  or [''])[0]
+                meta['genre']  = (audio.get('genre')  or [''])[0]
                 year = (audio.get('date') or [''])[0]
                 meta['year'] = year[:4] if year else ''
             elif ext == '.wma':
@@ -190,6 +216,8 @@ class AudioPlayer:
                     meta['album'] = str(audio['WM/AlbumTitle'][0])
                 if 'WM/Year' in audio:
                     meta['year'] = str(audio['WM/Year'][0])[:4]
+                if 'WM/Genre' in audio:
+                    meta['genre'] = str(audio['WM/Genre'][0])
         except Exception as e:
             print(f"Error reading metadata for {file_path}: {e}")
         return meta
@@ -254,6 +282,86 @@ class AudioPlayer:
             print(f"Error loading folder: {e}")
             return False
     
+    def save_playlist_m3u(self, file_path):
+        """Save current playlist to an M3U file"""
+        try:
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write('#EXTM3U\n')
+                for track in self.playlist:
+                    f.write(track + '\n')
+            print(f"Playlist saved to {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error saving playlist: {e}")
+            return False
+
+    def load_playlist_m3u(self, file_path):
+        """Load an M3U playlist file as a named folder group"""
+        try:
+            tracks = []
+            with open(file_path, 'r', encoding='utf-8') as f:
+                for line in f:
+                    line = line.strip()
+                    if line and not line.startswith('#') and os.path.exists(line):
+                        tracks.append(line)
+            if not tracks:
+                return False
+            name = os.path.splitext(os.path.basename(file_path))[0]
+            self.folders.append({'name': f'📋 {name}', 'path': None, 'tracks': tracks})
+            self._rebuild_playlist()
+            print(f"Loaded {len(tracks)} tracks from {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error loading playlist: {e}")
+            return False
+
+    def add_folder(self, folder_path):
+        """Add all audio files from a folder as a named group"""
+        if not os.path.exists(folder_path):
+            return False
+        supported = {'.mp3', '.m4a', '.mp4', '.aac', '.wma', '.wav', '.flac'}
+        tracks = [
+            os.path.join(folder_path, f)
+            for f in sorted(os.listdir(folder_path))
+            if os.path.isfile(os.path.join(folder_path, f))
+            and os.path.splitext(f)[1].lower() in supported
+        ]
+        if not tracks:
+            return False
+        # Avoid adding the same folder twice
+        for existing in self.folders:
+            if existing.get('path') == folder_path:
+                return True
+        self.folders.append({'name': os.path.basename(folder_path),
+                             'path': folder_path, 'tracks': tracks})
+        self._rebuild_playlist()
+        return True
+
+    def add_files_group(self, group_name, file_paths):
+        """Add a named group of individual files (e.g. from drag-and-drop)"""
+        valid = [p for p in file_paths if os.path.exists(p)]
+        if not valid:
+            return False
+        # Append to existing group with the same name if it exists
+        for folder in self.folders:
+            if folder['name'] == group_name:
+                for p in valid:
+                    if p not in folder['tracks']:
+                        folder['tracks'].append(p)
+                self._rebuild_playlist()
+                return True
+        self.folders.append({'name': group_name, 'path': None, 'tracks': valid})
+        self._rebuild_playlist()
+        return True
+
+    def _rebuild_playlist(self):
+        """Rebuild the flat playlist from all folder groups"""
+        self.playlist = []
+        for folder in self.folders:
+            self.playlist.extend(folder['tracks'])
+        if self.current_track_index >= len(self.playlist):
+            self.current_track_index = -1
+
     def add_files_to_playlist(self, file_paths):
         """Add multiple files to the playlist"""
         for file_path in file_paths:
@@ -269,17 +377,65 @@ class AudioPlayer:
                 return self.play()
         return False
     
+    def _build_shuffle_order(self):
+        """Generate a shuffled play order, excluding the current track"""
+        indices = list(range(len(self.playlist)))
+        if self.current_track_index in indices:
+            indices.remove(self.current_track_index)
+        random.shuffle(indices)
+        self._shuffle_order = indices
+        self._shuffle_pos = 0
+
+    def toggle_shuffle(self):
+        """Toggle shuffle on/off, returns new state"""
+        self.shuffle = not self.shuffle
+        if self.shuffle:
+            self._build_shuffle_order()
+        return self.shuffle
+
+    def cycle_repeat(self):
+        """Cycle repeat mode: off → repeat-all → repeat-one → off, returns new mode"""
+        self.repeat_mode = (self.repeat_mode + 1) % 3
+        return self.repeat_mode
+
     def play_next(self):
-        """Play the next track in playlist"""
-        if self.playlist and self.current_track_index < len(self.playlist) - 1:
-            return self.play_track_at_index(self.current_track_index + 1)
-        return False
-    
+        """Play the next track, respecting shuffle and repeat modes"""
+        if not self.playlist:
+            return False
+
+        if self.repeat_mode == 2:  # repeat-one
+            return self.play_track_at_index(self.current_track_index)
+
+        if self.shuffle:
+            if self._shuffle_pos < len(self._shuffle_order) - 1:
+                self._shuffle_pos += 1
+                return self.play_track_at_index(self._shuffle_order[self._shuffle_pos])
+            elif self.repeat_mode == 1:  # repeat-all: rebuild shuffle and loop
+                self._build_shuffle_order()
+                if self._shuffle_order:
+                    return self.play_track_at_index(self._shuffle_order[0])
+            return False
+        else:
+            if self.current_track_index < len(self.playlist) - 1:
+                return self.play_track_at_index(self.current_track_index + 1)
+            elif self.repeat_mode == 1:  # repeat-all: wrap to start
+                return self.play_track_at_index(0)
+            return False
+
     def play_previous(self):
-        """Play the previous track in playlist"""
-        if self.playlist and self.current_track_index > 0:
-            return self.play_track_at_index(self.current_track_index - 1)
-        return False
+        """Play the previous track, respecting shuffle mode"""
+        if not self.playlist:
+            return False
+
+        if self.shuffle:
+            if self._shuffle_pos > 0:
+                self._shuffle_pos -= 1
+                return self.play_track_at_index(self._shuffle_order[self._shuffle_pos])
+            return False
+        else:
+            if self.current_track_index > 0:
+                return self.play_track_at_index(self.current_track_index - 1)
+            return False
     
     def play(self):
         """Play the loaded audio file or resume if paused"""
@@ -444,7 +600,161 @@ class AudioPlayer:
     def set_volume(self, volume):
         """Set volume level (0.0 to 1.0)"""
         pygame.mixer.music.set_volume(volume)
+        if self._stream_channel:
+            self._stream_channel.set_volume(volume)
     
+    def fetch_album_art_online(self, artist='', album='', title=''):
+        """Search iTunes for album art. Returns a PIL Image or None."""
+        query = ' '.join(filter(None, [artist, album, title]))
+        if not query.strip():
+            return None
+        url = 'https://itunes.apple.com/search?' + urllib.parse.urlencode({
+            'term': query, 'entity': 'album', 'limit': 5, 'media': 'music'
+        })
+        try:
+            with urllib.request.urlopen(url, timeout=8) as r:
+                data = json.loads(r.read())
+            for result in data.get('results', []):
+                art_url = result.get('artworkUrl100', '')
+                if art_url:
+                    art_url = art_url.replace('100x100bb', '600x600bb')
+                    with urllib.request.urlopen(art_url, timeout=8) as r:
+                        return Image.open(io.BytesIO(r.read())).copy()
+        except Exception as e:
+            print(f"Error fetching online art: {e}")
+        return None
+
+    def embed_album_art(self, file_path, image_bytes, mime='image/jpeg'):
+        """Embed image bytes as album art into the audio file's tags."""
+        ext = os.path.splitext(file_path)[1].lower()
+        try:
+            if ext == '.mp3':
+                tags = ID3(file_path)
+                tags.delall('APIC')
+                tags['APIC'] = APIC(encoding=3, mime=mime, type=3,
+                                    desc='Cover', data=image_bytes)
+                tags.save()
+            elif ext in ['.m4a', '.mp4']:
+                from mutagen.mp4 import MP4Cover
+                audio = MP4(file_path)
+                fmt = MP4Cover.FORMAT_PNG if 'png' in mime else MP4Cover.FORMAT_JPEG
+                audio['covr'] = [MP4Cover(image_bytes, imageformat=fmt)]
+                audio.save()
+            elif ext == '.flac':
+                from mutagen.flac import Picture
+                audio = FLAC(file_path)
+                pic = Picture()
+                pic.type = 3
+                pic.mime = mime
+                pic.data = image_bytes
+                audio.clear_pictures()
+                audio.add_picture(pic)
+                audio.save()
+            else:
+                print(f"Art embedding not supported for {ext}")
+                return False
+            print(f"Art embedded into {file_path}")
+            return True
+        except Exception as e:
+            print(f"Error embedding art: {e}")
+            import traceback
+            traceback.print_exc()
+            return False
+
+    def play_stream(self, url):
+        """Play an internet radio stream via ffmpeg → pygame Channel"""
+        self.stop_stream()
+        pygame.mixer.music.stop()
+        try:
+            cmd = [
+                'ffmpeg',
+                '-reconnect', '1',
+                '-reconnect_streamed', '1',
+                '-reconnect_delay_max', '5',
+                '-i', url,
+                '-f', 's16le', '-ar', '44100', '-ac', '2',
+                '-loglevel', 'error',
+                'pipe:1',
+            ]
+            proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
+                                    stderr=subprocess.DEVNULL)
+            self._stream_proc = proc
+            self._stream_playing = True
+            self._stream_channel = pygame.mixer.Channel(0)
+            current_vol = pygame.mixer.music.get_volume()
+            self._stream_channel.set_volume(current_vol)
+            self.is_playing = True
+            self.is_paused = False
+            self.current_file = url
+            self.duration = 0
+
+            channel = self._stream_channel
+
+            def _feeder():
+                buf = b''
+                while self._stream_playing:
+                    data = proc.stdout.read(4096)
+                    if not data:
+                        break
+                    buf += data
+                    if len(buf) >= _STREAM_CHUNK:
+                        snd = pygame.mixer.Sound(buffer=buf[:_STREAM_CHUNK])
+                        buf = buf[_STREAM_CHUNK:]
+                        snd.set_volume(channel.get_volume())
+                        # Wait for queue slot (pygame channels hold 1 queued sound)
+                        while self._stream_playing and channel.get_queue() is not None:
+                            time.sleep(0.05)
+                        if not channel.get_busy():
+                            channel.play(snd)
+                        else:
+                            channel.queue(snd)
+
+            threading.Thread(target=_feeder, daemon=True).start()
+            print(f"Streaming: {url}")
+            return True
+        except Exception as e:
+            print(f"Error playing stream: {e}")
+            return False
+
+    def stop_stream(self):
+        """Stop radio stream and clean up ffmpeg process"""
+        self._stream_playing = False
+        if self._stream_proc:
+            try:
+                self._stream_proc.terminate()
+                self._stream_proc.wait(timeout=2)
+            except Exception:
+                pass
+            self._stream_proc = None
+        if self._stream_channel:
+            try:
+                self._stream_channel.stop()
+            except Exception:
+                pass
+            self._stream_channel = None
+        self.is_playing = False
+        self.is_paused = False
+        self.current_file = None
+
+    def reset(self):
+        """Stop playback and wipe all state back to startup defaults"""
+        self.stop_stream()
+        pygame.mixer.music.stop()
+        self.current_file = None
+        self.is_playing = False
+        self.is_paused = False
+        self.duration = 0
+        self.pause_position = 0
+        self.play_start_time = 0
+        self.pause_start_time = 0
+        self.playlist = []
+        self.folders = []
+        self.current_track_index = -1
+        self.shuffle = False
+        self.repeat_mode = 0
+        self._shuffle_order = []
+        self._shuffle_pos = -1
+
     def get_current_file(self):
         """Get the current file path"""
         return self.current_file

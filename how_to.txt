@@ -1,0 +1,147 @@
+========================================
+  lepeplabs_audio_thing — How To Use
+========================================
+
+TABLE OF CONTENTS
+-----------------
+  1. Getting Started
+  2. Transport Controls
+  3. Keyboard Shortcuts
+  4. Volume
+  5. Seek / Scrub
+  6. Supported Formats
+  7. Track List
+  8. Drag and Drop
+  9. Playlists
+  10. Album Art & Metadata
+  11. File Menu
+  12. Radio
+
+========================================
+
+GETTING STARTED
+---------------
+1. Run the player:  python main.py
+2. Click the 📁 button to load a music folder
+3. Click any track in the list to start playing
+
+TRANSPORT CONTROLS
+------------------
+  ▶   Play
+  II  Pause
+  ■   Stop
+  ⏮   Previous track
+  ⏭   Next track
+  📁  Open music folder
+  🔀  Shuffle (click to toggle on/off)
+  🔁  Repeat (click to cycle: Off → Repeat All → Repeat One)
+
+KEYBOARD SHORTCUTS
+------------------
+  Space       Play / Pause toggle
+  S / Esc     Stop
+  ←           Previous track
+  →           Next track
+  ↑           Volume up (+5%)
+  ↓           Volume down (-5%)
+
+VOLUME
+------
+  Use the VOL slider or ↑ / ↓ keys.
+  Range: 0% – 100%
+
+SEEK / SCRUB
+------------
+  Drag the progress bar to jump to any point in the track.
+  The current and total time are shown in the LCD display.
+
+SUPPORTED FORMATS
+-----------------
+  MP3, M4A, AAC, WMA, WAV, FLAC
+  Note: M4P (DRM-protected) files are not supported.
+
+TRACK LIST
+----------
+  - Tracks are grouped in a collapsible folder tree
+  - Click a folder header to expand ▼ or collapse ▶
+  - Click any track to play it immediately
+  - The currently playing track is highlighted in blue
+
+  Group by:  📁 Folder | 👤 Artist | 💿 Album | 🎵 Genre
+  Click any button in the "Group by" bar to regroup the tree.
+
+SEARCH
+------
+  Click the 🔍 button (next to Save/Load) to open the search bar.
+  Typing filters tracks in real time across name, artist, and album.
+  Groups with no matches are hidden automatically.
+  Click 🔍 again to close search and restore the full list.
+
+DRAG AND DROP
+-------------
+  Drag audio files or folders directly onto the player window.
+  Supported formats: MP3, M4A, AAC, WMA, WAV, FLAC.
+  Dropped tracks are added to the existing playlist.
+
+PLAYLISTS
+---------
+  💾 Save — saves the current playlist as an M3U file
+  📂 Load — loads a previously saved M3U playlist
+  Both buttons are in the top-right corner of the track list.
+
+ALBUM ART & METADATA
+--------------------
+  Album art is automatically extracted from the file's embedded tags.
+  Artist, album, and year are displayed below the LCD panel.
+  Supported tags: ID3 (MP3), MP4 atoms (M4A), FLAC pictures, ASF (WMA).
+
+  To add or change album art, use the File menu:
+    File > Load Album Art from File  — pick a local image (JPG, PNG, etc.)
+    File > Find Album Art Online     — searches iTunes using artist/album/title
+    File > Save Art to Tags          — embeds the loaded art into the file permanently
+    File > Clear Art                 — removes the displayed art (does not modify file)
+
+FILE MENU
+---------
+  File > Open File...     — add individual audio files to the playlist
+  File > Open Folder...   — same as the 📁 button
+  File > Save Playlist    — same as 💾 Save button
+  File > Load Playlist    — same as 📂 Load button
+  File > Exit             — quit the application
+
+========================================
+
+RADIO
+-----
+  Click the 📻 button (left of 💾 Save) to open/close the radio panel.
+  Closing the panel while a stream is playing also stops the stream.
+
+  URL Entry:
+    Paste any Icecast or Shoutcast stream URL into the field.
+    Click ▶ Play to start streaming.
+    Local playback stops automatically when a stream begins.
+
+  Saving a Station:
+    While a URL is in the entry field, click ★ Save.
+    A dialog will ask you to name the station.
+    Saved stations appear in the "Saved Stations" list below the presets.
+    They persist between sessions.
+
+  Removing a Station:
+    Click the ✕ button on the right of any saved station to delete it.
+
+  Built-in Presets (click to load the URL and start playing):
+    BBC Radio 1   — stream.live.vc.bbcmedia.co.uk
+    BBC Radio 2   — stream.live.vc.bbcmedia.co.uk
+    Jazz FM       — edge-bauerse03.sharp-stream.com
+    SomaFM Groove — ice2.somafm.com
+    SomaFM Drone  — ice2.somafm.com
+
+  While streaming:
+    The LCD display shows "LIVE" instead of a time counter.
+    The progress bar is not shown.
+
+  To stop the stream:
+    Click ■ Stop (transport bar), or click 📻 to close the radio panel.
+
+========================================
