@@ -16,8 +16,8 @@ import threading
 import urllib.request
 import urllib.parse
 
-# 2 seconds of 44100 Hz stereo 16-bit PCM per stream chunk
-_STREAM_CHUNK = 44100 * 2 * 2 * 2
+# 1 second of 44100 Hz stereo 16-bit PCM per stream chunk
+_STREAM_CHUNK = 44100 * 2 * 2 * 1
 from pydub import AudioSegment
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -661,6 +661,22 @@ class AudioPlayer:
             traceback.print_exc()
             return False
 
+    @staticmethod
+    def _pcm_to_wav(pcm_bytes, rate=44100, channels=2, width=2):
+        """Wrap raw s16le PCM bytes in a WAV container so pygame can parse them"""
+        import struct
+        n = len(pcm_bytes)
+        header = struct.pack(
+            '<4sI4s4sIHHIIHH4sI',
+            b'RIFF', 36 + n, b'WAVE',
+            b'fmt ', 16,
+            1, channels, rate,
+            rate * channels * width,
+            channels * width, width * 8,
+            b'data', n,
+        )
+        return io.BytesIO(header + pcm_bytes)
+
     def play_stream(self, url):
         """Play an internet radio stream via ffmpeg → pygame Channel"""
         self.stop_stream()
@@ -673,16 +689,15 @@ class AudioPlayer:
                 '-reconnect_delay_max', '5',
                 '-i', url,
                 '-f', 's16le', '-ar', '44100', '-ac', '2',
-                '-loglevel', 'error',
+                '-loglevel', 'warning',
                 'pipe:1',
             ]
             proc = subprocess.Popen(cmd, stdout=subprocess.PIPE,
-                                    stderr=subprocess.DEVNULL)
+                                    stderr=subprocess.PIPE)
             self._stream_proc = proc
             self._stream_playing = True
             self._stream_channel = pygame.mixer.Channel(0)
-            current_vol = pygame.mixer.music.get_volume()
-            self._stream_channel.set_volume(current_vol)
+            self._stream_channel.set_volume(pygame.mixer.music.get_volume())
             self.is_playing = True
             self.is_paused = False
             self.current_file = url
@@ -690,30 +705,43 @@ class AudioPlayer:
 
             channel = self._stream_channel
 
+            def _log_stderr():
+                for line in proc.stderr:
+                    txt = line.decode(errors='replace').rstrip()
+                    if txt:
+                        print(f"[radio ffmpeg] {txt}")
+
             def _feeder():
                 buf = b''
-                while self._stream_playing:
-                    data = proc.stdout.read(4096)
-                    if not data:
-                        break
-                    buf += data
-                    if len(buf) >= _STREAM_CHUNK:
-                        snd = pygame.mixer.Sound(buffer=buf[:_STREAM_CHUNK])
-                        buf = buf[_STREAM_CHUNK:]
-                        snd.set_volume(channel.get_volume())
-                        # Wait for queue slot (pygame channels hold 1 queued sound)
-                        while self._stream_playing and channel.get_queue() is not None:
-                            time.sleep(0.05)
-                        if not channel.get_busy():
-                            channel.play(snd)
-                        else:
-                            channel.queue(snd)
+                try:
+                    while self._stream_playing:
+                        data = proc.stdout.read(4096)
+                        if not data:
+                            print("[radio] ffmpeg pipe closed — stream ended or error")
+                            break
+                        buf += data
+                        if len(buf) >= _STREAM_CHUNK:
+                            wav = self._pcm_to_wav(buf[:_STREAM_CHUNK])
+                            buf = buf[_STREAM_CHUNK:]
+                            snd = pygame.mixer.Sound(file=wav)
+                            # Wait for queue slot
+                            while self._stream_playing and channel.get_queue() is not None:
+                                time.sleep(0.05)
+                            if not channel.get_busy():
+                                channel.play(snd)
+                            else:
+                                channel.queue(snd)
+                except Exception as exc:
+                    import traceback
+                    print(f"[radio feeder error] {exc}")
+                    traceback.print_exc()
 
+            threading.Thread(target=_log_stderr, daemon=True).start()
             threading.Thread(target=_feeder, daemon=True).start()
-            print(f"Streaming: {url}")
+            print(f"[radio] Connecting: {url}")
             return True
         except Exception as e:
-            print(f"Error playing stream: {e}")
+            print(f"Error starting stream: {e}")
             return False
 
     def stop_stream(self):
