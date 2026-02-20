@@ -8,6 +8,7 @@ Now with playlist support and album art extraction
 import pygame.mixer
 import os
 import io
+import wave
 import time
 import random
 import json
@@ -16,8 +17,8 @@ import threading
 import urllib.request
 import urllib.parse
 
-# 1 second of 44100 Hz stereo 16-bit PCM per stream chunk
-_STREAM_CHUNK = 44100 * 2 * 2 * 1
+# 1 second of 44100 Hz stereo 16-bit PCM — used by radio stream feeder
+_STREAM_CHUNK = 44100 * 2 * 2
 from pydub import AudioSegment
 from mutagen.mp3 import MP3
 from mutagen.mp4 import MP4
@@ -56,6 +57,10 @@ class AudioPlayer:
         self._stream_proc = None
         self._stream_channel = None
         self._stream_playing = False
+
+        # Visualizer PCM buffer
+        self._pcm_data = None   # bytes: raw s16le stereo 44100Hz PCM
+        self._pcm_file = None   # str: file for which PCM is stored
         
     def load_file(self, file_path):
         """Load an audio file and get its duration"""
@@ -767,6 +772,8 @@ class AudioPlayer:
     def reset(self):
         """Stop playback and wipe all state back to startup defaults"""
         self.stop_stream()
+        self._pcm_data = None
+        self._pcm_file = None
         pygame.mixer.music.stop()
         self.current_file = None
         self.is_playing = False
@@ -783,10 +790,85 @@ class AudioPlayer:
         self._shuffle_order = []
         self._shuffle_pos = -1
 
+    def preload_pcm(self, file_path, max_duration_sec=300):
+        """
+        Decode audio to raw s16le stereo 44100Hz PCM and store it for
+        real-time visualisation.  Capped at max_duration_sec to limit RAM.
+        Returns True on success, False on failure.
+        Call from a background thread — can be slow for large files.
+        """
+        import struct as _struct  # noqa – already stdlib
+        try:
+            ext = os.path.splitext(file_path)[1].lower()
+            fmt_map = {
+                '.mp3': 'mp3', '.m4a': 'm4a', '.mp4': 'm4a',
+                '.aac': 'aac', '.wma': 'wma', '.wav': 'wav', '.flac': 'flac',
+            }
+            fmt = fmt_map.get(ext)
+            if not fmt:
+                return False
+            seg = AudioSegment.from_file(file_path, format=fmt)
+            # Normalise to match pygame mixer settings
+            seg = seg.set_frame_rate(44100).set_channels(2).set_sample_width(2)
+            # Cap length to avoid excessive RAM on long files
+            if len(seg) > max_duration_sec * 1000:
+                seg = seg[: max_duration_sec * 1000]
+            self._pcm_data = seg.raw_data
+            self._pcm_file = file_path
+            print(f"[viz] PCM loaded: {len(self._pcm_data):,} bytes "
+                  f"({len(self._pcm_data) / (44100*4):.1f}s)")
+            return True
+        except Exception as e:
+            print(f"[viz] preload_pcm error: {e}")
+            self._pcm_data = None
+            self._pcm_file = None
+            return False
+
+    def get_viz_frame(self, pos_seconds, n_bars=30):
+        """
+        Extract n_bars mean-absolute-amplitude values from an ~80ms window
+        starting at pos_seconds.  Returns list of floats 0.0–1.0, or [].
+        Thread-safe (read-only access to _pcm_data).
+        """
+        import struct as _struct
+        if not self._pcm_data:
+            return []
+        RATE, CH, W = 44100, 2, 2       # sample rate, channels, width bytes
+        BPF = CH * W                    # bytes per stereo frame
+        WIN = int(0.08 * RATE)          # 80ms window in frames
+
+        start_b = int(pos_seconds * RATE) * BPF
+        end_b   = min(start_b + WIN * BPF, len(self._pcm_data))
+        if start_b >= end_b:
+            return []
+        raw = self._pcm_data[start_b:end_b]
+        n_frames = len(raw) // BPF
+        if n_frames == 0:
+            return []
+
+        # Unpack interleaved int16; keep left channel only
+        try:
+            all_s = _struct.unpack_from(f'<{n_frames * CH}h', raw)
+        except _struct.error:
+            return []
+        left = all_s[::CH]
+
+        # Split into n_bars chunks → mean absolute value per chunk
+        chunk = max(1, len(left) // n_bars)
+        bars = []
+        for i in range(n_bars):
+            sl = left[i * chunk: (i + 1) * chunk]
+            bars.append(sum(abs(s) for s in sl) / len(sl) if sl else 0.0)
+
+        peak = max(bars) if bars else 0
+        if peak == 0:
+            return [0.0] * len(bars)
+        return [b / peak for b in bars]
+
     def get_current_file(self):
         """Get the current file path"""
         return self.current_file
-    
+
     def get_current_filename(self):
         """Get just the filename without path"""
         if self.current_file:
